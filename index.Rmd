@@ -1,0 +1,341 @@
+---
+title: "Prediction of Unilateral Dumbbell Biceps Curl Quality from Mounted Sensor Measurements"
+output: html_document
+---
+<!--
+Your submission for the Peer Review portion should consist of a link to a Github repo with your R markdown and compiled HTML file describing your analysis. Please constrain the text of the writeup to < 2000 words and the number of figures to be less than 5. It will make it easier for the graders if you submit a repo with a gh-pages branch so the HTML page can be viewed online (and you always want to make it easy on graders :-).
+Due to security concerns with the exchange of R code, your code will not be run during the evaluation by your classmates. Please be sure that if they download the repo, they will be able to view the compiled HTML version of your analysis.
+-->
+Several publically available electronic devices now allow people to quantify and record how much of a specific exercise they do. However, these devices to not usually provide information about technique quality for the specific exercise. In their conference article from 2013, titled "Qualitative Activity Recognition of Weight Lifting Exercises," Velloso et al. had six participants perform one set of 10 repititions of the unilateral dumbbell biceps curl. While doing the curls, accelerometers, gyroscopes, and magnetometers were mounted on the dumbbell, belt, arm, and forearm (glove). The participants were asked to perform the curls in five different ways:
+
+*	Class A: exactly according to the specification  (correct)
+*	Class B: throwing the elbows to the front      (incorrect)
+*	Class C: lifting the dumbbell only halfway     (incorrect)
+*	Class D: lowering the dumbbell only halfway    (incorrect)
+*	Class E: throwing the hips to the front        (incorrect)
+
+In this project, the goal is to use the mounted sensor data to develop a model to predict the class of how the curl was done (A through E).
+```{r initialize, echo=FALSE}
+rm(list = ls())
+setwd("/Users/martin/data_science/Practical_Machine_Learning/week_4/course_project")
+```
+Include needed libraries:
+```{r libraries, message=FALSE, warning=FALSE}
+library(dplyr)        # A Grammar of Data Manipulation
+library(ggplot2)      # An Implementation of the Grammar of Graphics
+```
+Load the training and testing data from the provided files using read.csv:
+```{r load}
+data_train <- read.csv("pml-training.csv") # load training data
+data_test  <- read.csv("pml-testing.csv")  # load testing data
+```
+Data frame data_train has dimensions `r dim(data_train)` and data_test has dimensions `r dim(data_test)`. The only difference between the columns in the two data frames is that data_train's last column is "classe" and contains levels A through E, while data_test's last column is "problem_id," which is the question number in the quiz. Classe is not provided in data_test, because it should not be used for training the model. Classe is what we will predict for the test set.  
+A significant amount of processing is needed before these data can be used to train a model. None of the variables related to time are used in the model, as the project instructions do not indicate we should be doing forecasting, and because almost no information is provided about these time variables, they are difficult to interpret. Because there is not enough information, we cannot repeat the analysis described in the article about using different time window sizes.  
+It is necessary to rename variables with incorrect or inconsistent spelling. Because skewness_pitch_belt is missing, we assume it was wrongly assigned to the strangely named skewness_roll_belt.1. Any factor variables in data_train which should have numeric data are changed to numeric. Any integer variables for the sensors in data_train or data_test are changed to numeric. There are logical variables in data_test, which are all of the statistical measures (min, max, var, avg, stddev, etc.), and only contain NAs. Because these statistical mesaures are logical and empty, they are useless for prediction. Logicals would not be used for statistics. 
+```{r rename_columns, echo=FALSE}
+data_train <- rename(data_train, kurtosis_pitch_belt     = kurtosis_picth_belt,
+                     skewness_pitch_belt     = skewness_roll_belt.1, 
+                     max_pitch_belt          = max_picth_belt,
+                     kurtosis_pitch_arm      = kurtosis_picth_arm,
+                     max_pitch_arm           = max_picth_arm,
+                     kurtosis_pitch_dumbbell = kurtosis_picth_dumbbell,
+                     max_pitch_dumbbell      = max_picth_dumbbell,
+                     kurtosis_pitch_forearm  = kurtosis_picth_forearm,
+                     max_pitch_forearm       = max_picth_forearm)
+names_train <- names(data_train)
+data_test <- rename(data_test, kurtosis_pitch_belt     = kurtosis_picth_belt,
+                    skewness_pitch_belt     = skewness_roll_belt.1, 
+                    max_pitch_belt          = max_picth_belt,
+                    kurtosis_pitch_arm      = kurtosis_picth_arm,
+                    max_pitch_arm           = max_picth_arm,
+                    kurtosis_pitch_dumbbell = kurtosis_picth_dumbbell,
+                    max_pitch_dumbbell      = max_picth_dumbbell,
+                    kurtosis_pitch_forearm  = kurtosis_picth_forearm,
+                    max_pitch_forearm       = max_picth_forearm)
+names_test <- names(data_test)
+```
+```{r fact_and_int_2_num_train, echo=FALSE}
+# data_train
+data_train_classes <- as.character(lapply(data_train, class))
+#unique(data_train_classes)
+# [1] "integer" "factor"  "numeric"
+# change any factor variables in data_train which should have numerical data to numeric
+names_fact2num_train <- setdiff(names_train[data_train_classes == "factor"], c("user_name","cvtd_timestamp","new_window","classe"))
+options(warn=-1)
+data_train <- mutate_each(data_train, funs(as.character), match(names_fact2num_train, names_train))
+data_train <- mutate_each(data_train, funs(as.numeric)  , match(names_fact2num_train, names_train))
+options(warn=0)
+data_train_classes <- as.character(lapply(data_train, class))
+# change any integer variables for the four sensors to numeric
+names_int2num_train <- setdiff(names_train[data_train_classes == "integer"], c("X","raw_timestamp_part_1","raw_timestamp_part_2",
+                                                                               "num_window"))
+data_train <- mutate_each(data_train, funs(as.numeric), match(names_int2num_train, names_train))
+data_train_classes <- as.character(lapply(data_train, class))
+```
+```{r logical_and_int_2_num_test, echo=FALSE}
+# data_test
+data_test_classes <- as.character(lapply(data_test, class))
+#unique(data_test_classes)
+# [1] "integer" "factor"  "numeric" "logical"
+names_logical_test <- names_test[data_test_classes == "logical"]
+# The variables that are logical are all the statistical measures (min, max, var, avg, stddev, etc.)
+# NOTE: Because these are logical, it shows they are essentially useless for prediction. Logicals would not be used for 
+#       statistics.
+# change any logical variables in data_test which should have numerical data to numeric (all should be numeric)
+names_log2num_test <- names_logical_test
+options(warn=-1)
+data_test <- mutate_each(data_test, funs(as.numeric), match(names_log2num_test, names_test))
+options(warn=0)
+data_test_classes <- as.character(lapply(data_test, class))
+# change any integer variables for the four sensors to numeric
+names_int2num_test <- setdiff(names_test[data_test_classes == "integer"], c("X","raw_timestamp_part_1","raw_timestamp_part_2",
+                                                                            "num_window", "problem_id"))
+data_test <- mutate_each(data_test, funs(as.numeric), match(names_int2num_test, names_test))
+data_test_classes <- as.character(lapply(data_test, class))
+```
+```{r rm_1, echo=FALSE}
+# remove variables that are no longer needed
+rm("names_fact2num_train", "names_int2num_train", "names_logical_test", "names_log2num_test", "names_int2num_test")
+```
+Next, consider the fraction of data available in each column:
+```{r fraction_available}
+data_train_isfinite <- mutate_each(data_train, funs(is.finite))
+data_train_isfinite_col_sums <- summarize_each(data_train_isfinite, funs(sum))
+data_train_frac_isfinite_col_sums <- unlist(data_train_isfinite_col_sums, use.names = FALSE) / dim(data_train)[1]
+data_test_isfinite <- mutate_each(data_test, funs(is.finite))
+data_test_isfinite_col_sums <- summarize_each(data_test_isfinite, funs(sum))
+data_test_frac_isfinite_col_sums <- unlist(data_test_isfinite_col_sums, use.names = FALSE) / dim(data_test)[1]
+```
+In data_train, the columns either have 100% of the rows with available data or <= 2.07% of the rows with available data. In data_test, the columns either have 100% of the rows with available data or 0% of the rows with available data. Imputing would be unacceptable for data_train, and impossible for data_test. Therefore, we remove the train columns with <= 2.07% finite data and test columns with 0% finite data. We only keep columns that are not X (an index), time variables, and ones in names_rmv_train or names_rmv_test:
+```{r remove_unavailable_columns}
+names_train <- names(data_train)
+names_test <- names(data_test)
+names_rmv_train <- names_train[data_train_frac_isfinite_col_sums < 1]
+names_rmv_test  <- names_test[data_test_frac_isfinite_col_sums < 1]
+names_keep_train <- setdiff(names_train, c("X", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", 
+                                           "new_window", "num_window", names_rmv_train))
+data_train_orig <- data_train
+data_train <- select(data_train, match(names_keep_train, names_train))
+names_train <- names(data_train)
+names_keep_test <- setdiff(names_test, c("X", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", 
+                                         "new_window", "num_window", names_rmv_test))
+data_test_orig <- data_test
+data_test <- select(data_test, match(names_keep_test, names_test))
+names_test <- names(data_test)
+```
+```{r rm_2, echo=FALSE, warning=FALSE}
+# remove variables that are no longer needed
+rm("data_test_isfinite", "data_test_isfinite_col_sums",
+   "data_train_isfinite", "data_train_isfinite_col_sums",
+   "mat_test_isfinite", "mat_train_isfinite",
+   "data_test_classes", "data_test_frac_isfinite_col_sums",
+   "data_train_classes", "data_train_frac_isfinite_col_sums",
+   "mat_test_isfinite_row_sums", "mat_train_isfinite_row_sums",
+   "names_data_test_isfinite", "names_data_train_isfinite",
+   "names_keep_test", "names_keep_train",
+   "names_rmv", "names_rmv_test", "names_rmv_train", "i")
+```
+We also remove "total_accel_*" for each mount position, because it appears to be the magnitude of the acceleration vector (with a conversion factor of ~10), and because it is the only column left that is not for an individual direction (x, y, z, roll, pitch, yaw).
+```{r rm_total_accel, echo=FALSE}
+names_keep_train <- setdiff(names_train, c("total_accel_belt","total_accel_arm","total_accel_dumbbell","total_accel_forearm"))
+data_train <- select(data_train, match(names_keep_train, names_train))
+names_train <- names(data_train)
+names_keep_test <- setdiff(names_test, c("total_accel_belt","total_accel_arm","total_accel_dumbbell","total_accel_forearm"))
+data_test <- select(data_test, match(names_keep_test, names_test))
+names_test <- names(data_test)
+rm("names_keep_train", "names_keep_test")
+```
+The columns that remain are "user_name", and for each of the sensor mount positions with "*" standing for "belt", "arm", "dumbbell", or "forearm" ("glove"):
+
+* "roll_\*", "pitch_\*", "yaw_\*",
+*  "gyros_\*\_x",  "gyros_\*\_y",  "gyros_\*\_z", 
+*  "accel_\*\_x",  "accel_\*\_y",  "accel_\*\_z",
+* "magnet_\*\_x", "magnet_\*\_y", "magnet_\*\_z"
+
+The 17 predictors used in the article for model prediction were all statistical, and are the ones we had to exclude for the reasons provided above. Instead, we will train a model using the raw data, prior to any statisiics such as mean or variance being applied. Our approach is necessarily different from the that used by the article authors, because we are not left with columns containing the predictors they used, although we could have possibly estimated the statistics if the time window information had been explained.
+
+To explore the training data, classe is plotted against each remaining possible predictor in the list above. This allows one to look for any clear dependency of classe on each predictor, and to look for possible extreme outliers. For the sake of compactness, these figures are not shown here; a subset is shown later after deciding on a model. In the plotting, it is determined that rows 5373 and 9273 in data_train have extreme outliers. and the entire rows are removed:
+```{r outliers}
+data_train_hold <- data_train
+data_train <- filter(data_train, !(gyros_dumbbell_x < -200))
+data_train <- filter(data_train, !(magnet_dumbbell_y < -3500))
+rm("data_train_hold")
+```
+From reviewing the figures of classe versus each predictor, it appears that there are differences among classes for several possible predictors, and that nonlinear methods such as classification might be able to use these predictors to accurately predict classes. I saw no indication that linear regression would work with these data, that is there is no clear trend in classe with the changing value of a predictor. Some of the predictors have two sets of values separated by a gap, but for the same classe. While some predictors seem to show almost no change in value with classe, there is no clear indication that these predictors should be elimiinated, so for now we will leave them all in.  
+Data frame data_train is renamed to data_use, because with cross validation below these data will be used to form both training and test sets. Data frame data_test is renamed to data_validation, because it will be held out for validation.
+```{r rename}
+data_use <- data_train
+names_use <- names_train
+rm("data_train","names_train")
+data_validation <- data_test
+names_validation <- names_test
+rm("data_test","names_test")
+```
+Include libraries needed for modeling:
+```{r libraries_modeling, message=FALSE, warning=FALSE}
+library(caret)        # Classification and Regression Training
+library(randomForest) # Breiman and Cutler's Random Forests for Classification and Regression
+library(kernlab)      # Kernel-Based Machine Learning Lab
+library(klaR)         # Classification and Visualization
+library(adabag)       # Applies Multiclass AdaBoost.M1, SAMME and Bagging
+library(plyr)         # Tools for Splitting, Applying and Combining Data
+```
+Before any model training, set the seed so that random number generation is the same each time the script is run.
+```{r seed}
+set.seed(0)
+```
+To predict classe from the available predictors, we try five different classification methods. There are many available methods in caret, so we just chose methods that are varied, but among the most standard or well-known. Cross validation with 10 folds is used. This avoids the bias that would occur by relying on just one training set and one test set. Instead, by using folds all data have the opportunity to be in a training set and test set. This reduces the potential variability in the final model predicted.  
+The first model considered is random forest ("rf") and it is determined using caret's train function. The number of trees (ntree) is set to 4. The number of variables randomly sampled as candidates at each split (mtry) is also set to 4. These parameters were chosen to reduce overfitting, but even with these small parameter values, the model is still extremely accurate. When we use train, 10-fold cross validation is achieved by using trControl = trainControl(method = 'cv', number = 10):
+```{r rf}
+mod_rf <- train(classe ~., data = data_use, method='rf', trControl = trainControl(method = 'cv', number = 10), 
+                ntree = 4, tuneGrid = data.frame(mtry = 4))
+c(mod_rf$results$Accuracy, 1-mod_rf$results$Accuracy)*100 # Accuracy, Error (%)
+```
+The random forest accuracy is 97.02%, which is an average of the accuracies for the 10 folds. The corresponding error is 2.98%, and this is our estimate of out-of-sample error.  
+Four other models are also considered. For linear discriminant analysis we use the default parameters and 10-fold cross validation:
+```{r lda}
+mod_lda <- train(classe ~., data = data_use, method='lda', trControl = trainControl(method = 'cv', number = 10))
+c(mod_lda$results$Accuracy, 1-mod_lda$results$Accuracy)*100 # Accuracy, Error (%)
+```
+The linear discriminant analysis accuracy is 73.32% and the out-of-sample error estimate is 26.68%.  
+For the next model, least squares support vector machine (SVM), we use the default parameters (regularization parameter = 0.01), and 10-fold cross validation. Unable to determine how to run SVM with train, the root lssvm function was used instead
+```{r svm_1, eval=FALSE}
+mod_svm <- lssvm(classe ~., data = data_use, cross = 10)
+```
+```{r svm_2, echo=FALSE}
+load("mod_svm.Rdata")
+mod_svm
+```
+The SVM accuracy is 68.70% and the out-of-sample error estimate is 31.30%.  
+The next model is Naive Bayes with default settings and 10-fold cross validation. Naive Bayes took the longest to run among the models at 3.4 hours, compared to 16 minutes for SVM and seconds for the others, on a MacBook Pro purchased in 2010 with a 2.53 GHz Intel Core i5 processor.  
+```{r nb_1, eval=FALSE}
+mod_nb <- train(classe ~., data = data_use, method='nb', trControl = trainControl(method = 'cv', number = 10))
+c(max(mod_nb$results$Accuracy), 1-max(mod_nb$results$Accuracy))*100 # Accuracy, Error (%)
+```
+```{r nb_2, echo=FALSE}
+load("mod_nb.Rdata")
+c(max(mod_nb$results$Accuracy), 1-max(mod_nb$results$Accuracy))*100 # Accuracy, Error (%)
+```
+The Naive Bayes accuracy is 75.72% and the out-of-sample error estimate is 24.28%. The max function picks out the larger accuracy obtained in the case where "usekernel" is TRUE, that is, the kernel density estimate is used for denstity estimation.  
+The last model considered is boosting (bagged adaboost) with mfinal (the number of trees) = 10, maxdepth (the maximum tree depth) = 10, and 10-fold cross validation.
+```{r boost}
+mod_boost <- train(classe ~., data = data_use, method='AdaBag', trControl = trainControl(method = 'cv', number = 10), 
+                   tuneGrid = data.frame(mfinal = 10, maxdepth = 10))
+c(mod_boost$results$Accuracy, 1-mod_boost$results$Accuracy)*100 # Accuracy, Error (%)
+```
+The boosting accuracy is 85.71% and the out-of-sample error estimate is 14.29%.  
+The models can then be ranked by their accuracy / out-of-sample error:
+```{r table_acc_err, results="asis", echo=FALSE}
+library(xtable)
+table_df <- data.frame(Model_Type = c("Random Forest", "Boosting", "Naive Bayes",    "LDA",    "SVM"), 
+                       Accuracy   = c(       "97.02%",   "85.71%",      "75.72%", "73.32%", "68.70%"),
+                       Error      = c(        "2.98%",   "14.29%",      "24.28%", "26.68%", "31.30%") )
+xt_acc_err <- xtable(table_df)
+print(xt_acc_err, type="html")
+```
+Thus, random forest is the best model and boosting comes in second. Naive Bayes and LDA perform similarly and SVM is last. When the random forest model is run on the validation data:
+```{r rf_predict}
+classe_predict_rf <- predict(mod_rf, data_validation)
+```
+this prediction passes the quiz with 95% (19 of 20) classes correct, which is consistent with the 2.98% out-of-sample error estimate. According to the article, the study authors also used random forest. The random forest algorithm does not allow for easy plotting of how it works, and so we do not do any tree plots here; note that the "getTree"" function can provide some insight. The relative importance of each predictor according to the Gini index can be determined with caret's varImp function:
+```{r gini}
+var_imp_mod_rf <- varImp(mod_rf)
+var_imp_mod_rf
+```
+Predictor roll_belt is clearly the most important, and the belt rotations make up three of the top six. We included the name of the individual doing the exercise as a predictor, but name does not appear to be important, and suggests that the model results do not depend on individual. We can then plot classe vs. predictor in data_use for the most important predictors (top six) by using ggplot:
+```{r multiplot, echo=FALSE}
+# Define function "multiplot"", which is used below.
+# Use multiplot function obtained from:
+# http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/
+# because we cannot use facets with current data structure.
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+```{r classe_vs_predictor_1, echo=FALSE, fig.align='center'}
+gg_roll_belt <- ggplot(data_use, aes(x = roll_belt, y = classe)) +
+                geom_point(shape = 1) +
+                scale_x_continuous(limits=c(-180,180), breaks = seq(-180,180,90)) +
+                theme_bw() +
+                labs(x = "Roll Belt (degrees)") +
+                labs(y = "Classe")
+gg_pitch_belt <- ggplot(data_use, aes(x = pitch_belt, y = classe)) +
+                 geom_point(shape = 1) +
+                 scale_x_continuous(limits=c(-180,180), breaks = seq(-180,180,90)) +
+                 theme_bw() +
+                 labs(x = "Pitch Belt (degrees)") +
+                 labs(y = "Classe")
+gg_magnet_dumbbell_y <- ggplot(data_use, aes(x = magnet_dumbbell_y, y = classe)) +
+                        geom_point(shape = 1) +
+                        scale_x_continuous(limits=c(-800,800), breaks = seq(-800,800,100)) +
+                        theme_bw() +
+                        labs(x = "Magnet Dumbbell Y") +
+                        labs(y = "Classe")
+multiplot(gg_roll_belt, gg_pitch_belt, gg_magnet_dumbbell_y, cols = 1)
+```
+There are some visible differences in roll belt among classes. A, B, and C are similar, but A has more spread for the positive values. D and E have more spread near zero, and E has a different range at large values. In pitch belt we can see some differences among classes, especially in E's larger range of values. In magnet dumbell y, all classes have a gap between negative and positive values, and A has the smallest range.
+```{r classe_vs_predictor_2, echo=FALSE, fig.align='center'}
+gg_roll_forearm <- ggplot(data_use, aes(x = roll_forearm, y = classe)) +
+                   geom_point(shape = 1) +
+                   scale_x_continuous(limits=c(-180,180), breaks = seq(-180,180,90)) +
+                   theme_bw() +
+                   labs(x = "Roll Forearm (degrees)") +
+                   labs(y = "Classe")
+gg_magnet_arm_x <- ggplot(data_use, aes(x = magnet_arm_x, y = classe)) + 
+                   geom_point(shape = 1) +
+                   scale_x_continuous(limits=c(-800,800), breaks = seq(-800,800,100)) +
+                   theme_bw() +
+                   labs(x = "Magnet Arm X") +
+                   labs(y = "Classe")
+gg_yaw_belt <- ggplot(data_use, aes(x = yaw_belt, y = classe)) +
+               geom_point(shape = 1) +
+               scale_x_continuous(limits=c(-180,180), breaks = seq(-180,180,90)) +
+               theme_bw() +
+               labs(x = "Yaw Belt (degrees)") +
+               labs(y = "Classe")
+multiplot(gg_roll_forearm, gg_magnet_arm_x, gg_yaw_belt, cols = 1)
+```
+In roll forearm, the classes  have somewhat different patterns, but there is a lot of overlap too. In magnet arm x, there is a lot of overlap, but A has the narrowest range, which is shifted positive relative to the others, and B and C have smaller ranges than D and E. In yaw belt, there are visible differences among the classes, with C and D the most similar, and E clearly distinct. Some of these results are as expected. The belt should rotate differently in classe E in which the hips are moved incorrectly. The forearm roll would have a narrower range in C and D when the dumbbell is only moved halfway.  
+In conclusion, while we do not exactly repeat the analysis in the article, this project supports the overall result that classification of quality for the unilateral dumbbell biceps curl can de done with mounted sensor measurements, and that random forest allows this classification to be done with high accuracy.
